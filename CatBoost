@@ -1,0 +1,266 @@
+import numpy as np
+import pandas as pd
+from pandas import read_csv
+from sklearn.metrics import mean_squared_error
+from math import sqrt
+import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+def dataframe_read(file, produktgruppe):
+    dataset = read_csv(file,
+                    delimiter=";", parse_dates=[4], infer_datetime_format=True, dayfirst=True, header=0,
+                    low_memory=False, decimal=',',
+                    thousands='.')
+    dataset = dataset[dataset['MATNR'].str.contains(produktgruppe)]
+    dataset = dataset[['KWMENG', 'VDATU']]
+    dataset['VDATU'] = dataset['VDATU'].astype('datetime64[ns]')
+    return dataset
+
+def start_date_offset(start_fc_date, train_size, freq):
+	if freq == 'B':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.tseries.offsets.BusinessDay(train_size)
+	elif freq == 'W':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.DateOffset(weeks=train_size)
+	return start_date
+
+def end_date_offset(start_date, periods, freq):
+	if freq == 'B':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.tseries.offsets.BusinessDay(periods - 1)
+	elif freq == 'W':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.DateOffset(weeks=periods) - pd.DateOffset(days=1)
+	return end_date
+
+def dataframe_resampling(dataset, freq, start_date, end_date):
+    dataset_resampled = dataset.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    dataset_resampled = dataset_resampled.set_index(dataset_resampled.VDATU)
+    index = pd.date_range(start=pd.to_datetime(start_date, dayfirst=True), end=pd.to_datetime(end_date, dayfirst=True), freq=freq)
+    dataset_resampled = pd.DataFrame(dataset_resampled, index=index)
+    return dataset_resampled
+
+
+if __name__ == "__main__":
+    # == Define Time Range, Product ==
+    start_fc_date = '04-01-2021'
+    Produktgruppe = 'A1'  # 'A', 'B', 'C'
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_path = '../'
+    csv_file = 'Veltins_Roh.csv'
+    csv_out_path = '../Results/CatBoost/'
+    freq = 'W'
+    # train_size for business day should be multiplicity of 5
+    # B: [1040]; W: [208]
+    train_size = 208 if freq == 'W' else 1040
+    forecast = 5 * (5 if freq == 'B' else 1)
+    periode = train_size + forecast
+    start_date = start_date_offset(start_fc_date, train_size, freq)
+    start_date_str = start_date.strftime('%d-%m-%Y')
+    end_date = end_date_offset(start_date, periode, freq)
+    end_date_str = end_date.strftime('%d-%m-%Y')
+    m = (52 if freq == 'W' else 7)
+    title_freq = 'Business_Day' if freq == 'B' else 'Weekly'
+    
+    # == Read CSV Data ==
+    data = dataframe_read(csv_path + csv_file, Produktgruppe)
+    print('data: \n', data.head(15))
+
+    # == Resampling data ==
+    data = dataframe_resampling(data, freq, start_date, end_date)
+    # features = features['KWMENG']
+    print('data: \n', data)
+
+    # adding external Holiday data
+    ext_Holiday = read_csv('../Holiday.csv',
+                           delimiter=";", parse_dates=[0], infer_datetime_format=True,
+                           dayfirst=True, header=0,
+                           low_memory=False, decimal=',',
+                           thousands='.')
+    ext_Holiday = dataframe_resampling(ext_Holiday, freq, start_date, end_date)
+    ext_Holiday = ext_Holiday[['Feiertag']]
+    print('holidays date: \n', ext_Holiday)
+
+    # merge Data Frame
+    data = data.merge(ext_Holiday, left_index=True, right_index=True)
+    print('Merge DF 2: \n', data)
+    
+    # adding external promotion data
+    ext_Promotion = read_csv('../Angebote.csv',
+                             delimiter=";", parse_dates=[0], infer_datetime_format=True,
+                             dayfirst=True, header=0,
+                             low_memory=False, decimal=',', thousands='.')
+    ext_Promotion = dataframe_resampling(ext_Promotion, freq, start_date, end_date)
+    ext_Promotion = ext_Promotion[['Promotion']]
+    print('promotion date: \n', ext_Promotion)
+
+    # merge Data Frame
+    data = data.merge(ext_Promotion, left_index=True, right_index=True)
+    print('Merge DF 3: \n', data)
+
+    # Seasonality Features
+    data['Date'] = pd.to_datetime(data['VDATU'])
+    data['Year'] = data['VDATU'].apply(lambda x: x.year)
+    data['Month'] = data['VDATU'].apply(lambda x: x.month)
+    data['Week'] = data['VDATU'].apply(lambda x: x.week)
+    data['Day'] =  data['VDATU'].apply(lambda x: x.day)
+    data['Weekday'] = data['VDATU'].apply(lambda x: x.dayofweek)
+    dummy_weekday = pd.get_dummies(data['Weekday'])
+    data = pd.merge(left=data, right=dummy_weekday, left_index=True, right_index=True)
+    print(data.head(15))
+
+    # Lagged Features
+    data['Bday_lag1'] = data['KWMENG'].shift(1)
+    data['Bday_lag2'] = data['KWMENG'].shift(2)
+    data['Bday_lag3'] = data['KWMENG'].shift(3)
+    data['Bday_lag4'] = data['KWMENG'].shift(4)
+    data['Bday_lag5'] = data['KWMENG'].shift(5)
+    data['Bday_lag10'] = data['KWMENG'].shift(10)
+    data['Bday_lag15'] = data['KWMENG'].shift(15)
+    data['Bday_lag20'] = data['KWMENG'].shift(20)
+    data['Bday_lag25'] = data['KWMENG'].shift(25)
+    data['Bday_roll5'] = data['KWMENG'].rolling(window=5).mean()
+    data['Bday_roll10'] = data['KWMENG'].rolling(window=10).mean()
+    data = data.dropna()
+    data = data.reset_index()
+    data = data.drop(['VDATU', 'index', 'Date'], axis=1)
+    print(data.head(20))
+    print(data.tail(20))
+    print('The shape of our data is:', data.shape)
+
+    # Descriptive statistics for each column
+    print(data.describe())
+
+    # One-hot encode the data using pandas get_dummies
+    # features = pd.get_dummies(features)
+    # Display the first 5 rows of the last 12 columns
+    print(data.iloc[:, 7:].head(5))
+
+    # Use numpy to convert to arrays
+    # Labels are the values we want to predict
+    y = np.array(data['KWMENG'])
+    # Remove the labels from the features
+    # axis 1 refers to the columns
+    X = data.drop('KWMENG', axis = 1)
+    X_dataframe = X
+    # Saving feature names for later use
+    X_list = list(X.columns)
+    # Convert to numpy array
+    print('feature_list: ', X_list)
+    X = np.array(data[X_list])
+
+    # Using Skicit-learn to split data into training and testing sets
+    from sklearn.model_selection import train_test_split
+    # Split the data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=forecast ,
+                                                        random_state=0, shuffle=False)
+
+    # Forecasting with CatBoost
+    from catboost import CatBoostRegressor
+    from sklearn.feature_selection import SelectFromModel
+
+    my_cat = CatBoostRegressor(silent=True, eval_metric='RMSE')
+    my_cat = my_cat.fit(X_train, y_train)
+    # Prediction with CatBoost
+    my_cat_pred = my_cat.predict(X_test)
+
+    # calculating error
+    Cat_norm_rmse = sqrt(mean_squared_error(my_cat_pred, y_test))
+    print('RMSE - CatBoost: ', round(Cat_norm_rmse, 4))
+    Cat_norm_rmses = Cat_norm_rmse * len(y_test) * 100 / np.sum(y_test)
+    print('RMSE(%) - CatBoost: ', round(Cat_norm_rmses, 2))
+
+    # Features selection
+    select = SelectFromModel(my_cat, prefit=True)
+    select_X_train = select.transform(X_train)
+    # train model
+    selection_model = CatBoostRegressor(silent=True, eval_metric='RMSE')
+    selection_model = selection_model.fit(select_X_train, y_train)
+    # evaluate model
+    select_X_test = select.transform(X_test)
+    select_pred = selection_model.predict(select_X_test)
+
+    # calculating error
+    cat_select_rmse = sqrt(mean_squared_error(select_pred, y_test))
+    print('RMSE - Random Forest: ', round(cat_select_rmse, 4))
+    cat_select_rmses = cat_select_rmse * len(y_test) * 100 / np.sum(y_test)
+    print('RMSE(%) - Random Forest: ', round(cat_select_rmses, 2))
+
+    # selected features
+    selected_feat = X_dataframe.columns[(select.get_support())]
+    print('total features: {}'.format((X_train.shape[1])))
+    print('selected features: {}'.format(len(selected_feat)))
+    print(selected_feat)
+
+    # param
+    my_cat_params = my_cat.get_all_params()
+    print('Params: ', my_cat_params)
+
+    my_cat_depth = my_cat_params.get('depth')
+    my_cat_learning_rate = my_cat_params.get('learning_rate')
+    my_cat_iterations = my_cat_params.get('iterations')
+    print('iterations: ', my_cat_iterations)
+    print('depth: ', my_cat_depth)
+    print('learning_rate: ', my_cat_learning_rate)
+
+    importances = list(my_cat.feature_importances_)
+    # List of tuples with variable and importance
+    feature_importances = [(feature, round(importance, 2)) for feature, importance in zip(X_list, importances)]
+    # Sort the feature importances by most important first
+    feature_importances = sorted(feature_importances, key=lambda x: x[1], reverse=True)
+    # Print out the feature and importances
+    for pair in feature_importances:
+        print('Variable: {:20} Importance: {}'.format(*pair))
+
+    # Params Grid
+    iterations = list(range(300, 1001, 100))
+    learning_rate = [0.1, 0.2, 0.3, 0.5, 0.6, 0.9, 1.0]
+    depth = list(range(2, 9, 1))  # maximum number of levels allowed in each decision tree
+
+    random_grid = {'iterations': iterations,
+                    'depth': depth,
+                    'learning_rate': learning_rate}
+
+    # Grid Search - CatBoost
+    from sklearn.model_selection import GridSearchCV
+    cat_GridSearch = GridSearchCV(CatBoostRegressor(silent=True, eval_metric='RMSE'),
+                                  random_grid,
+                                  scoring='neg_root_mean_squared_error',
+                                  cv = 6)
+
+    cat_GridSearch = cat_GridSearch.fit(select_X_train, y_train)
+    best_params_GridSearch = cat_GridSearch.best_params_
+    print('Best Hyperparameter - Grid Search: ', best_params_GridSearch)
+    cat_GS_depth = best_params_GridSearch.get('depth')
+    cat_GS_learning_rate = best_params_GridSearch.get('learning_rate')
+    cat_GS_iterations = best_params_GridSearch.get('iterations')
+    print('iterations: ', cat_GS_iterations)
+    print('depth: ', cat_GS_depth)
+    print('learning_rate: ', cat_GS_learning_rate)
+
+    rmse_GS = ((-1) * cat_GridSearch.best_score_)
+    print('RMSE GridSearch: ', rmse_GS)
+    cat_GS_pred = cat_GridSearch.predict(select_X_test)
+
+    # calculating error
+    cat_GS_rmse = sqrt(mean_squared_error(cat_GS_pred, y_test))
+    print('RMSE - CatBoost: ', round(cat_GS_rmse, 4))
+    cat_GS_rmses = cat_GS_rmse * len(y_test) * 100 / np.sum(y_test)
+    print('RMSE(%) - CatBoost: ', round(cat_GS_rmses, 2))
+
+    result_dataframe = pd.DataFrame({'Bezeichnung': ['RMSE', 'RMSE(%)', 'iterations', 'depth', 'learning_rate'],
+                                     'Cat': [Cat_norm_rmse, Cat_norm_rmses, my_cat_iterations, my_cat_depth,
+                                             my_cat_learning_rate],
+                                     'Cat_FeatSelect': [cat_select_rmse, cat_select_rmses, '', '', len(selected_feat)],
+                                     'Cat_GridSearch': [cat_GS_rmse, cat_GS_rmses,
+                                                        cat_GS_iterations, cat_GS_depth, cat_GS_learning_rate],
+                                     'RMSE GridSearch': [rmse_GS, '', '', '', '']
+                                     })
+    print(result_dataframe)
+
+    # excel Output file
+    result_featImp = pd.DataFrame(feature_importances)
+    result_featImp.to_excel(csv_out_path + now + '_Forecast_CatBoost_Features_'+ title_freq + '_' + Produktgruppe
+                + str(train_size) + '_' + start_fc_date + '.xlsx', index_label='index')
+    result_dataframe.to_excel(csv_out_path + now + '_Forecast_CatBoost_'+ title_freq + '_' + Produktgruppe
+                + str(train_size) + '_' + start_fc_date + '.xlsx', index_label='index')
