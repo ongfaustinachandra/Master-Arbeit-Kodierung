@@ -1,0 +1,128 @@
+import numpy as np
+import pandas as pd
+from pandas import read_csv
+from sklearn.metrics import mean_squared_error
+from math import sqrt
+import math
+from statsmodels.tsa.arima.model import ARIMA
+from sklearn.model_selection import train_test_split
+import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+def dataframe_read(file, produktgruppe):
+    dataset = read_csv(file,
+                    delimiter=";", parse_dates=[4], infer_datetime_format=True, dayfirst=True, header=0,
+                    low_memory=False, decimal=',',
+                    thousands='.')
+    dataset = dataset[dataset['MATNR'].str.contains(produktgruppe)]
+    dataset = dataset[['KWMENG', 'VDATU']]
+    dataset['VDATU'] = dataset['VDATU'].astype('datetime64[ns]')
+    return dataset
+
+def start_date_offset(start_fc_date, train_size, freq):
+	if freq == 'B':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.tseries.offsets.BusinessDay(train_size)
+	elif freq == 'W':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.DateOffset(weeks=train_size)
+	return start_date
+
+def end_date_offset(start_date, periods, freq):
+	if freq == 'B':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.tseries.offsets.BusinessDay(periods - 1)
+	elif freq == 'W':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.DateOffset(weeks=periods) - pd.DateOffset(days=1)
+	return end_date
+
+def dataframe_resampling(dataset, freq, start_date, end_date):
+    dataset_resampled = dataset.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    dataset_resampled = dataset_resampled.set_index(dataset_resampled.VDATU)
+    index = pd.date_range(start=pd.to_datetime(start_date, dayfirst=True), end=pd.to_datetime(end_date, dayfirst=True), freq=freq)
+    dataset_resampled = pd.DataFrame(dataset_resampled, index=index)
+    return dataset_resampled
+
+if __name__ == "__main__":
+    # === Preparing Data ===
+    start_fc_date = '06-01-2020'
+    end_date = '31-10-2021'
+    Produktgruppe = 'A1'  # 'A', 'B', 'C'
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_path = '../'
+    csv_file = 'Veltins_Roh.csv'
+    csv_out_path = '../Results/Hyperparameter/'
+    # B: [65, 130, 195]; W: [13, 26, 39]
+    train_size = 65
+    freq = 'W'
+    step_CV = 6
+    step = 5
+    forecast = (5 if freq == 'B' else 1)
+    periode = train_size + (forecast * step)
+    start_date = start_date_offset(start_fc_date, train_size, freq)
+    start_date_str = start_date.strftime('%d-%m-%Y')
+    title_freq = 'Business_Day' if freq == 'B' else 'Weekly'
+
+    # === Read CSV Data ===
+    data = dataframe_read(csv_path + csv_file, Produktgruppe)
+
+    # === Resampling Data ===
+    data = dataframe_resampling(data, freq, start_date, end_date)
+    data = data['KWMENG']
+
+    # == Starting ARIMA Grid Parameter Search ==
+    avg_errors = []
+    start = start_date
+    for p in range(6):
+        for q in range(6):
+            for i in range(3):
+                start_CV = start_date
+                for stCV in range(step_CV):
+                    # start_orig = start_date
+                    errors = []
+                    errorsp = []
+                    index_orig = pd.date_range(start=pd.to_datetime(start_CV, dayfirst=True),
+                                               periods=train_size + (forecast * step), freq=freq)
+                    data_orig = pd.DataFrame(data, index_orig)
+                    train_orig, test_orig = train_test_split(data_orig, train_size=train_size, shuffle=False)
+                    print('test_original: ', test_orig)
+                    start_rolling = start_CV
+                    fcst = []
+                    for st in range(step):
+                        index = pd.date_range(start=pd.to_datetime(start_rolling, dayfirst=True),
+                                              periods=train_size + forecast, freq=freq)
+                        data_rolling = pd.DataFrame(data_orig, index)
+                        train, test = train_test_split(data_rolling, train_size=train_size, shuffle=False)
+                        try:
+                            mod = ARIMA(train, order=(p,i,q))
+                            res = mod.fit()
+                            result = res.forecast(steps=forecast)
+                            if freq == 'W':
+                                if math.isnan(result):
+                                    fcst.append(-9999999.)
+                                else:
+                                    fcst.extend(result)
+                            else:
+                                fcst.extend(result)
+                            print(fcst)
+                        except:
+                            print('errorred')
+                            if freq == 'B':
+                                fcst.extend([-9999999., -9999999., -9999999., -9999999., -9999999.])
+                            else:
+                                fcst.append(-9999999.)
+                        start_rolling = pd.to_datetime(start_rolling, dayfirst=True) + pd.DateOffset(weeks=1)
+
+                    errors.append(sqrt(mean_squared_error(test_orig, fcst)))
+                    errorsp.append(sqrt(mean_squared_error(test_orig, fcst)) * len(test_orig) * 100 / np.sum(test_orig))
+                    start_CV = pd.to_datetime(start_CV, dayfirst=True) + pd.DateOffset(weeks=8)
+                pq_result = [p, i, q, np.mean(errors), np.mean(errorsp)]
+                print(pq_result)
+                avg_errors.append(pq_result)
+    avg_errors = pd.DataFrame(avg_errors)
+    avg_errors.columns = ['p', 'i', 'q', 'RMSE', 'RMSE(%)']
+    avg_errors = avg_errors.sort_values('RMSE', ascending=False)
+    print(avg_errors)
+
+    avg_errors.to_excel(csv_out_path + now + '_ARIMA_Hyp_' + title_freq + '_' + Produktgruppe + '_'
+                + str(train_size) + '_' + start_fc_date + '.xlsx')
