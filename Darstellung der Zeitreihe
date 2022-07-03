@@ -1,0 +1,72 @@
+import pandas as pd
+from pandas import read_csv
+import matplotlib.pyplot as plt
+import datetime
+
+def dataframe_read(file, produktgruppe):
+    dataset = read_csv(file,
+                    delimiter=";", parse_dates=[4], infer_datetime_format=True, dayfirst=True, header=0,
+                    low_memory=False, decimal=',',
+                    thousands='.')
+    dataset = dataset[dataset['MATNR'].str.contains(produktgruppe)]
+    dataset = dataset[['KWMENG', 'VDATU']]
+    dataset['VDATU'] = dataset['VDATU'].astype('datetime64[ns]')
+    return dataset
+
+def start_date_offset(start_fc_date, train_size, freq):
+	if freq == 'B':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.tseries.offsets.BusinessDay(train_size)
+	elif freq == 'W':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.DateOffset(weeks=train_size)
+	return start_date
+
+def end_date_offset(start_date, periods, freq):
+	if freq == 'B':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.tseries.offsets.BusinessDay(periods - 1)
+	elif freq == 'W':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.DateOffset(weeks=periods) - pd.DateOffset(days=1)
+	return end_date
+
+def dataframe_resampling(dataset, freq, start_date, end_date):
+    dataset_resampled = dataset.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    dataset_resampled = dataset_resampled.set_index(dataset_resampled.VDATU)
+    index = pd.date_range(start=pd.to_datetime(start_date, dayfirst=True), end=pd.to_datetime(end_date, dayfirst=True), freq=freq)
+    dataset_resampled = pd.DataFrame(dataset_resampled, index=index)
+    return dataset_resampled
+
+
+if __name__ == "__main__":
+    # === Preparing Data ===
+    start_date = '02-01-2017'
+    end_date = '27-07-2021'
+    Produktgruppe = 'C4'  # 'A', 'B', 'C'
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_path = '../Veltins Daten/'
+    csv_file = 'Veltins_Roh.csv'
+    fig_path = 'Results/Plotting/'
+    train_size = 720
+    freq = 'W'
+    step = 5
+    forecast = (5 if freq == 'B' else 1)
+    periode = train_size + (forecast * step)
+    title_freq = 'Business Day' if freq == 'B' else 'Weekly'
+    
+    # === Read CSV Data ===
+    data = dataframe_read(csv_path + csv_file, Produktgruppe)
+    print('data: \n', data.head(15))
+
+    # === Resampling Data ===
+    data_resample = dataframe_resampling(data, freq, start_date, end_date)
+    data_result_weekly = data_resample
+
+    # === Plotting Data ===
+    plt.figure(figsize=(20,10))
+    plt.plot(data_resample['KWMENG'])
+    plt.title(title_freq + ' Nachfrageverlauf von Produkt ' + Produktgruppe + ' ('
+              + start_date + ' - ' + end_date + ')', fontname='Times New Roman', fontsize=36)
+    plt.xlabel('Zeit', fontname='Times New Roman', fontsize=24)
+    plt.ylabel('Nachfrage', fontname='Times New Roman', fontsize=24)
+    plt.savefig(fig_path + now + '_Plot_' + title_freq + '_' + Produktgruppe + '_'
+                + start_date + '-' + end_date + '.png')
