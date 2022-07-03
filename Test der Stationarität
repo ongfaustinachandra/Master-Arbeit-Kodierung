@@ -1,0 +1,116 @@
+import pandas as pd
+from pandas import read_csv
+from statsmodels.tsa.stattools import adfuller, kpss
+import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+def dataframe_read(file, produktgruppe):
+    dataset = read_csv(file,
+                    delimiter=";", parse_dates=[4], infer_datetime_format=True, dayfirst=True, header=0,
+                    low_memory=False, decimal=',',
+                    thousands='.')
+    dataset = dataset[dataset['MATNR'].str.contains(produktgruppe)]
+    dataset = dataset[['KWMENG', 'VDATU']]
+    dataset['VDATU'] = dataset['VDATU'].astype('datetime64[ns]')
+    return dataset
+
+def dataframe_resampling(dataset, freq, start_date, end_date):
+    dataset_resampled = dataset.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    dataset_resampled = dataset_resampled.set_index(dataset_resampled.VDATU)
+    index = pd.date_range(start=pd.to_datetime(start_date, dayfirst=True), end=pd.to_datetime(end_date, dayfirst=True), freq=freq)
+    dataset_resampled = pd.DataFrame(dataset_resampled, index=index)
+    return dataset_resampled
+
+def adf_test(dataset):
+    result_w_adf = adfuller(dataset)
+    print('ADF Statistic:')
+    print('p-value: %f' % result_w_adf[1])
+    return result_w_adf
+
+def kpss_test(dataset):
+    result_w_kpss = kpss(dataset, regression='c')
+    print('KPSS Statistic:')
+    print('p-value: %f' % result_w_kpss[1])
+    return result_w_kpss
+
+def get_stationary(adf_test_result, kpss_test_result):
+    if adf_test_result[1] > 0.05 and kpss_test_result[1] < 0.05:
+        stationary = 'Time Series is non stationary'
+    elif adf_test_result[1] < 0.05 and kpss_test_result[1] > 0.05:
+        stationary = 'Time Series is stationary'
+    elif adf_test_result[1] > 0.05 and kpss_test_result[1] > 0.05:
+        stationary = 'Time Series is trend stationary'
+    else:
+        stationary = 'Time Series is difference stationary'
+    return stationary
+
+def stat_test_output(result_adf, result_kpss, stationarity, freq):
+    op.write('==== Data ' + freq + ' ====\n')
+    op.write('====== ' + Produktgruppe + ' Class ======\n')
+    op.write(start_date + ' - ' + end_date + '\n')
+    op.write('ADF Statistic: \n')
+    op.write('p-value: %f' % result_adf[1])
+    op.write('\n')
+    op.write('KPSS Statistic: \n')
+    op.write('p-value: %f' % result_kpss[1])
+    op.write('\n')
+    op.write(stationarity + '\n\n')
+
+if __name__ == '__main__':
+    # == Preparing Data ==
+    start_date = '07-01-2019'
+    end_date = '03-01-2021'
+    Produktgruppe = 'C2'  # 'A', 'B', 'C'
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_path = '../'
+    csv_file = 'Veltins_Roh.csv'
+
+    fig_path = '../Results/StatTest/'
+    txt_path = '../Results/StatTest/'
+
+    # == Read the Data from CSV ==
+    data = dataframe_read(csv_path + csv_file, Produktgruppe)
+    print('data: \n', data.head(15))
+    print('data info:', data.info())
+
+    # == Resampling Data ==
+    # data weekly
+    data_weekly = dataframe_resampling(data, 'W', start_date, end_date)
+
+    # data daily
+    data_Bday = dataframe_resampling(data, 'B', start_date, end_date)
+
+    # data monthly
+    data_monthly = dataframe_resampling(data, 'M', start_date, end_date)
+
+    # == Stationarity Test ADF, KPSS ==
+    print('==== Data Weekly ====')
+    print('=== ' + Produktgruppe + ' Class ' + start_date + ' - ' + end_date + '===')
+    result_w_adf = adf_test(data_weekly['KWMENG'])
+    result_w_kpss = kpss_test(data_weekly['KWMENG'])
+    stationary_w = get_stationary(result_w_adf, result_w_kpss)
+    print(stationary_w)
+
+    print('==== Data Business Day ====')
+    print('=== ' + Produktgruppe + ' Class ' + start_date + ' - ' + end_date + '===')
+    result_bd_adf = adf_test(data_Bday['KWMENG'])
+    result_bd_kpss = kpss_test(data_Bday['KWMENG'])
+    stationary_bd = get_stationary(result_bd_adf, result_bd_kpss)
+    print(stationary_bd)
+
+    print('==== Data Monthly ====')
+    print('=== ' + Produktgruppe + ' Class ' + start_date + ' - ' + end_date + '===')
+    result_m_adf = adf_test(data_monthly['KWMENG'])
+    result_m_kpss = kpss_test(data_monthly['KWMENG'])
+    stationary_m = get_stationary(result_m_adf, result_m_kpss)
+    print(stationary_m)
+
+    # == Output Tests Daily, Weekly, Monthly ==
+    with open(txt_path + now + '_StatTest_' + Produktgruppe + ' Class '
+                     + start_date + ' - ' + end_date + '.txt', 'a') as op:
+        stat_test_output(result_bd_adf, result_bd_kpss, stationary_bd, 'B')
+        stat_test_output(result_w_adf, result_w_kpss, stationary_w, 'W')
+        stat_test_output(result_m_adf, result_m_kpss, stationary_m, 'M')
