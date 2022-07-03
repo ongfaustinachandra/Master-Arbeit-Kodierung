@@ -1,0 +1,129 @@
+import datetime
+import numpy as np
+import matplotlib.pyplot as plt
+import statistics as st
+from pandas import read_csv
+import pandas as pd
+from tabulate import tabulate
+
+def dataframe_read(file, produktgruppe):
+    dataset = read_csv(file,
+                    delimiter=";", parse_dates=[4], infer_datetime_format=True, dayfirst=True, header=0,
+                    low_memory=False, decimal=',',
+                    thousands='.')
+    dataset = dataset[dataset['MATNR'].str.contains(produktgruppe)]
+    dataset = dataset[['KWMENG', 'VDATU']]
+    dataset['VDATU'] = dataset['VDATU'].astype('datetime64[ns]')
+    return dataset
+
+def dataframe_resampling(dataset, freq, start_date, end_date):
+    dataset_resampled = dataset.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    dataset_resampled = dataset_resampled.set_index(dataset_resampled.VDATU)
+    index = pd.date_range(start=pd.to_datetime(start_date, dayfirst=True), end=pd.to_datetime(end_date, dayfirst=True), freq=freq)
+    dataset_resampled = pd.DataFrame(dataset_resampled, index=index)
+    return dataset_resampled
+
+def statistic_analysis(dataset, freq, txt_path):
+    sum = np.sum(dataset)
+    mean = np.nanmean(dataset)
+    median = np.nanmedian(dataset)
+    mode = st.mode(dataset)
+    min = np.nanmin(dataset)
+    max = np.nanmax(dataset)
+    n_zeros = np.count_nonzero(dataset == 0)
+    n_nonzero = np.count_nonzero(dataset)
+    stdv = np.nanstd(dataset)
+    KoV = stdv / mean
+    sq_KoV = pow(KoV, 2)
+    ADI = len(dataset) / n_nonzero
+    pattern = demand_pattern_class(sq_KoV, ADI)
+    print('======== Data Summary - ' + freq + ' ======')
+    print('========== ' + Produktgruppe + ' Class ===========')
+    table = [['Mean', mean], ['Median', median],
+             ['Mode', mode], ['Min', min], ['Max', max],
+             ['Num. of zeros', n_zeros], ['Num. of non zeros', n_nonzero],
+             ['Std-Abwh', stdv], ['Coeff. of Variation', KoV],
+             ['Square of CoV', sq_KoV], ['ADI', ADI]]
+    table_2 = [['Demand Pattern', pattern], ['Sum', sum]]
+    header = ['Description', 'Value']
+    print(tabulate(table, header, numalign='decimal', floatfmt='.2f'))
+    print(tabulate(table_2))
+    with open(txt_path + now + '_TS Decomposition ' + Produktgruppe + ' Class '
+                 + start_date + ' - ' + end_date + '.txt', 'a') as op:
+        op.write('======== Data Summary - ' + freq + ' ======\n')
+        op.write('========== ' + Produktgruppe + ' Class ===========\n')
+        op.write(tabulate(table, header, numalign='decimal', floatfmt='.2f'))
+        op.write('\n')
+        op.write(tabulate(table_2))
+        op.write('\n\n')
+
+def plot_decomposition(x, observed, trend, seasonal, residual, Produktgruppe, freq, fig_path):
+    title_freq = 'Business Day' if freq == 'B' else 'Weekly'
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(15, 8))
+    ax1.plot(x, observed)
+    ax1.yaxis.set_label_position('right')
+    ax1.set_ylabel('Observed')
+    ax2.plot(x, trend)
+    ax2.yaxis.set_label_position('right')
+    ax2.set_ylabel('Trend')
+    ax3.plot(x, seasonal)
+    ax3.yaxis.set_label_position('right')
+    ax3.set_ylabel('Seasonal')
+    ax4.scatter(x, residual)
+    ax4.yaxis.set_label_position('right')
+    ax4.axhline(0, color='black', zorder=0)
+    ax4.set_ylabel('Residual')
+    fig.suptitle(title_freq + ' Additive Zerlegung der Zeitreihe Produktgruppe ' + Produktgruppe + ' ('
+                 + start_date + ' - ' + end_date + ')', va='top', fontsize=28, fontname='Times New Roman')
+    pyplot.savefig(fig_path + now + '_TS Decomposition - ' + title_freq + ' - ' + Produktgruppe
+                    + start_date + ' - ' + end_date + '.png')
+
+def demand_pattern_class(sq_KoV, ADI):
+    if sq_KoV < 0.49 and ADI < 1.32:
+        pattern = 'Smooth demand'
+    elif sq_KoV > 0.49 and ADI < 1.32:
+        pattern = 'Erratic demand'
+    elif sq_KoV < 0.49 and ADI > 1.32:
+        pattern = 'Intermittent demand'
+    elif sq_KoV > 0.49 and ADI > 1.32:
+        pattern = 'Lumpy demand'
+    return pattern
+
+
+if __name__ == '__main__':
+    start_date = '02-01-2017'
+    end_date = '31-10-2021' # 'End date on Sunday, last day of the month'
+    Produktgruppe = 'C4'  # 'A', 'B', 'C'
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_path = '../Veltins Daten/'
+    csv_file = 'Veltins_Roh.csv'
+    fig_path = 'Results/Decomposition/'
+    txt_path = 'Results/Decomposition/'
+
+    data = dataframe_read(csv_path + csv_file, Produktgruppe)
+    print('data: \n', data.head(15))
+    data_daily = dataframe_resampling(data, 'D', start_date, end_date)
+    print('Data Daily: \n', data_daily.head(15))
+
+    # data weekly
+    data_weekly = dataframe_resampling(data, 'W', start_date, end_date)
+    print('Data Weekly: \n', data_weekly.head(15))
+    print('Data Weekly: \n', data_weekly.tail(15))
+
+    # == Weekly Statistical Analysis ==
+    statistic_analysis(data_weekly['KWMENG'], 'W', txt_path)
+
+    # == Time Series Decomposition ==
+    from matplotlib import pyplot
+    from statsmodels.tsa.seasonal import seasonal_decompose
+
+    # == Weekly based TS Decompostition ==
+    result3 = seasonal_decompose(data_weekly['KWMENG'], model='additive', period=52)
+    observed3 = result3.observed
+    trend3 = result3.trend
+    seasonal3 = result3.seasonal
+    residual3 = result3.resid
+
+    plot_decomposition(data_weekly.VDATU, observed3, trend3, seasonal3, residual3, Produktgruppe, 'W', fig_path)
