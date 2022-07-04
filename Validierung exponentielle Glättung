@@ -1,0 +1,160 @@
+import numpy as np
+import pandas as pd
+from pandas import read_csv
+from statsmodels.tsa.api import SimpleExpSmoothing, Holt
+from sklearn.metrics import mean_squared_error
+from math import sqrt
+from sklearn.model_selection import train_test_split
+import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+def dataframe_read(file, produktgruppe):
+    dataset = read_csv(file,
+                    delimiter=";", parse_dates=[4], infer_datetime_format=True, dayfirst=True, header=0,
+                    low_memory=False, decimal=',',
+                    thousands='.')
+    dataset = dataset[dataset['MATNR'].str.contains(produktgruppe)]
+    dataset = dataset[['KWMENG', 'VDATU']]
+    dataset['VDATU'] = dataset['VDATU'].astype('datetime64[ns]')
+    return dataset
+
+def start_date_offset(start_fc_date, train_size, freq):
+	if freq == 'B':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.tseries.offsets.BusinessDay(train_size)
+	elif freq == 'W':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.DateOffset(weeks=train_size)
+	return start_date
+
+def end_date_offset(start_date, periods, freq):
+	if freq == 'B':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.tseries.offsets.BusinessDay(periods - 1)
+	elif freq == 'W':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.DateOffset(weeks=periods) - pd.DateOffset(days=1)
+	return end_date
+
+def dataframe_resampling(dataset, freq, start_date, end_date):
+    dataset_resampled = dataset.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    dataset_resampled = dataset_resampled.set_index(dataset_resampled.VDATU)
+    index = pd.date_range(start=pd.to_datetime(start_date, dayfirst=True), end=pd.to_datetime(end_date, dayfirst=True), freq=freq)
+    dataset_resampled = pd.DataFrame(dataset_resampled, index=index)
+    return dataset_resampled
+
+def rmse(result, column_name):
+    rmse = sqrt(mean_squared_error(result['KWMENG'], result[column_name]))
+    rmse = round(rmse, 0)
+    return rmse
+
+def rmses(result, column_name):
+    n_result = len(result)
+    rmses = rmse(result, column_name) * n_result * 100 / np.sum(result['KWMENG'])
+    rmses = round(rmses, 2)
+    return rmses
+
+
+if __name__ == "__main__":
+    # === Preparing Data ===
+    # == Define Time Range, Product ==
+    start_fc_date = '06-01-2020'
+    end_date = '31-10-2021'
+    Produktgruppe = 'C4'  # 'A', 'B', 'C'
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_path = '../'
+    csv_file = 'Veltins_Roh.csv'
+    csv_out_path = '../Results/Forecast_noSeasonal_Validierung/'
+    # train_size for business day should be multiplicity of 5
+    step_CV = 6
+    freq = 'W'
+    step = 5
+    forecast = (5 if freq == 'B' else 1)
+    title_freq = 'Business_Day' if freq == 'B' else 'Weekly'
+
+    # == Read CSV Data
+    data = dataframe_read(csv_path + csv_file, Produktgruppe)
+    print('data: \n', data.head(15))
+    
+    # == starting Validation ==
+    if freq == 'W':
+        train_size_list = [13, 26, 39]
+    else:
+        train_size_list = [65, 130, 195]
+
+    avg_errors_SES = []
+    avg_errors_DES = []
+
+    for ts in train_size_list:
+        start_date = start_date_offset(start_fc_date, ts, freq)
+        data_resample = dataframe_resampling(data, freq, start_date, end_date)
+        start_CV = start_date
+        for stCV in range(step_CV):
+            errors_SES = []
+            errors_DES = []
+            errorsp_SES = []
+            errorsp_DES = []
+            index_orig = pd.date_range(start=pd.to_datetime(start_CV, dayfirst=True),
+                                       periods=ts + (forecast * step), freq=freq)
+            data_orig = pd.DataFrame(data_resample, index_orig)
+            data_orig = data_orig['KWMENG']
+            train_orig, test_orig = train_test_split(data_orig, train_size=ts, shuffle=False)
+            print('test_original: ', test_orig)
+            start_rolling = start_CV
+            fcst_SES = []
+            fcst_DES = []
+            for st in range(step):
+                index = pd.date_range(start=pd.to_datetime(start_rolling, dayfirst=True),
+                                      periods=ts + forecast, freq=freq)
+                data_rolling = pd.DataFrame(data_orig, index)
+                train, test = train_test_split(data_rolling, train_size=ts, shuffle=False)
+                try:
+                    # == SES ==
+                    res_SES = SimpleExpSmoothing(train['KWMENG'], initialization_method='estimated') \
+                        .fit(optimized=True).forecast(forecast).round(decimals=0)
+                    print(res_SES.tail(30))
+                    fcst_SES.extend(res_SES)
+
+                    # == DES ==
+                    res_DES = Holt(train['KWMENG'], initialization_method='estimated') \
+                        .fit().forecast(forecast).round(decimals=0)
+                    print(res_DES.tail(30))
+                    fcst_DES.extend(res_DES)
+
+                except:
+                    print('errorred')
+                    if freq == 'B':
+                        fcst_SES.extend([-9999999., -9999999., -9999999., -9999999., -9999999.])
+                        fcst_DES.extend([-9999999., -9999999., -9999999., -9999999., -9999999.])
+                    else:
+                        fcst_SES.append(-9999999.)
+                        fcst_DES.append(-9999999.)
+
+                print('fcst_SES', fcst_SES)
+                print('fcst_DES: ', fcst_DES)
+                start_rolling = pd.to_datetime(start_rolling, dayfirst=True) + pd.DateOffset(weeks=1)
+
+            errors_SES.append(sqrt(mean_squared_error(test_orig, fcst_SES)))
+            errors_DES.append(sqrt(mean_squared_error(test_orig, fcst_DES)))
+            errorsp_SES.append(sqrt(mean_squared_error(test_orig, fcst_SES)) * len(test_orig) * 100 / np.sum(test_orig))
+            errorsp_DES.append(sqrt(mean_squared_error(test_orig, fcst_DES)) * len(test_orig) * 100 / np.sum(test_orig))
+            start_CV = pd.to_datetime(start_CV, dayfirst=True) + pd.DateOffset(weeks=8)
+        ts_result_SES = [ts, np.mean(errors_SES), np.mean(errorsp_SES)]
+        ts_result_DES = [ts, np.mean(errors_DES), np.mean(errorsp_DES)]
+        print('SES\n', ts_result_SES)
+        print('DES\n', ts_result_DES)
+        avg_errors_SES.append(ts_result_SES)
+        avg_errors_DES.append(ts_result_DES)
+    avg_errors_SES = pd.DataFrame(avg_errors_SES)
+    avg_errors_DES = pd.DataFrame(avg_errors_DES)
+    avg_errors_SES.columns = ['train_size', 'RMSE', 'RMSE(%)']
+    avg_errors_DES.columns = ['train_size', 'RMSE', 'RMSE(%)']
+
+    avg_errors_SES = avg_errors_SES.sort_values('RMSE', ascending=False)
+    avg_errors_DES = avg_errors_DES.sort_values('RMSE', ascending=False)
+    print('SES\n', avg_errors_SES)
+    print('DES\n', avg_errors_DES)
+
+    avg_errors_SES.to_excel(csv_out_path + now + '_SES_CV_' + title_freq + '_' + Produktgruppe + '_'
+                        + '_' + start_fc_date + '.xlsx')
+    avg_errors_DES.to_excel(csv_out_path + now + '_DES_CV_' + title_freq + '_' + Produktgruppe + '_'
+                        + '_' + start_fc_date + '.xlsx')
