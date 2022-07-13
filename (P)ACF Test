@@ -1,0 +1,102 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jul  5 11:19:40 2022
+
+@author: Faustina Chandra
+"""
+
+from statsmodels.graphics.tsaplots import plot_acf
+from statsmodels.graphics.tsaplots import plot_pacf
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from pandas import read_csv
+from sklearn.metrics import mean_squared_error
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.stattools import adfuller
+import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+def dataframe_read(file, produktgruppe):
+    dataset = read_csv(file,
+                    delimiter=";", parse_dates=[4], infer_datetime_format=True, dayfirst=True, header=0,
+                    low_memory=False, decimal=',',
+                    thousands='.')
+    dataset = dataset[dataset['MATNR'].str.contains(produktgruppe)]
+    dataset = dataset[['KWMENG', 'VDATU']]
+    dataset['VDATU'] = dataset['VDATU'].astype('datetime64[ns]')
+    return dataset
+
+def start_date_offset(start_fc_date, train_size, freq):
+	if freq == 'B':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.tseries.offsets.BusinessDay(train_size)
+	elif freq == 'W':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.DateOffset(weeks=train_size)
+	return start_date
+
+def end_date_offset(start_date, periods, freq):
+	if freq == 'B':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.tseries.offsets.BusinessDay(periods - 1)
+	elif freq == 'W':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.DateOffset(weeks=periods) - pd.DateOffset(days=1)
+	return end_date
+
+def dataframe_resampling(dataset, freq, start_date, end_date):
+    dataset_resampled = dataset.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    dataset_resampled = dataset_resampled.set_index(dataset_resampled.VDATU)
+    index = pd.date_range(start=pd.to_datetime(start_date, dayfirst=True), end=pd.to_datetime(end_date, dayfirst=True), freq=freq)
+    dataset_resampled = pd.DataFrame(dataset_resampled, index=index)
+    return dataset_resampled
+
+if __name__ == "__main__":
+    # === Preparing Data ===
+    start_fc_date = '06-01-2020'
+    end_date = '31-10-2021'
+    Produktgruppe = 'C2'  # 'A', 'B', 'C'
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_path = ''
+    csv_file = 'Veltins_Roh.csv'
+    csv_out_path = '../Results/Hyperparameter/'
+    # B: [65, 130, 195]; W: [13, 26, 39]
+    train_size = 156
+    freq = 'W'
+    step_CV = 6
+    step = 5
+    forecast = (5 if freq == 'B' else 1)
+    periode = train_size + (forecast * step)
+    start_date = start_date_offset(start_fc_date, train_size, freq)
+    start_date_str = start_date.strftime('%d-%m-%Y')
+    title_freq = 'Business_Day' if freq == 'B' else 'Weekly'
+    
+    # === Read CSV Data ===
+    data = dataframe_read(csv_path + csv_file, Produktgruppe)
+
+    # === Resampling Data ===
+    data = dataframe_resampling(data, freq, start_date, end_date)
+    data = data['KWMENG']
+    # data = np.diff(data)
+    # data = np.diff(data)
+    
+    # == AdFuller Test ==
+    adfTest = adfuller(data)
+    print('p-Value ADF Test: ', adfTest[1])
+    
+    plot_acf(data, lags=(20))
+    plot_pacf(data, lags=(20))
+    # plt.show()
+    
+    # == Seasonal decompose
+    decompose = seasonal_decompose(data)
+    seasonal = decompose.seasonal
+    # seasonal = np.diff(seasonal)
+    
+    # == AdFuller Test ==
+    adfTest_seasonal = adfuller(seasonal)
+    print('p-Value ADF Test: ', adfTest_seasonal[1])
+    
+    plot_acf(seasonal, lags=(20))
+    plot_pacf(seasonal, lags=(20))
+    # plt.show()
