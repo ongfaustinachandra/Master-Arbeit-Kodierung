@@ -270,7 +270,7 @@ def forecast_ARIMA():
     writer.save()
 
     
-def forecast_SARIMA(train_size):
+def forecast_SARIMA():
     print('Start SARIMA')
     ''' === Preparing Data === '''
     
