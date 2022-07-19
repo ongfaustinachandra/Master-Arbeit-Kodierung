@@ -14,6 +14,7 @@ import math
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA
+import matplotlib.pyplot as plt
 from pandas import read_csv
 from statsmodels.tsa.stattools import adfuller
 from sklearn.metrics import mean_squared_error
@@ -160,9 +161,9 @@ def forecast_ARIMA():
         freq = 'B'
     step_CV = 6
     step = 5
-    forecast = 1
-    start_date = start_date_offset(start_fc_date, train_size + (8 * step_CV), freq)
-    title_freq = 'Weekly'
+    forecast = 5 if freq=='B' else 1
+    start_date = start_date_offset(start_fc_date, train_size + (8 * step_CV * forecast), freq)
+    title_freq = 'Weekly' if freq=='W' else 'Business Day'
 
     ''' === Preparing Data === '''
     data = dataframe_read(csv_file, Produktgruppe)
@@ -251,14 +252,30 @@ def forecast_ARIMA():
     train, test = train_test_split(data_result, train_size=train_size, shuffle=False)
     
     # Gleitender Mittelwert
-    data_result['MA'] = data_result.rolling(window=5).mean().round(decimals=0)
+    data_result['MA'] = data_result.rolling(window=forecast * step).mean().round(decimals=0)
     
     # == ARIMA ==    
     data_result['ARIMA'] = sm.tsa.statespace.SARIMAX(train['KWMENG'], order=(p, d, q)
-    ).fit(disp=False).forecast(steps=step).round(decimals=0)
+    ).fit(disp=False).forecast(steps=forecast * step).round(decimals=0)
     data_result = data_result.dropna(subset=(['ARIMA']))
     print('result: \n', data_result)
-
+    
+    # =============================================================================
+    
+    plot_data = train['KWMENG'].tail(10 * forecast)
+    
+    plt.figure(figsize=(20, 10))
+    plt.plot(plot_data, label='Training Data', linewidth=3)
+    plt.plot(data_result['MA'], label='Moving Average', linewidth=3)
+    plt.plot(data_result['ARIMA'], label='ARIMA', linewidth=3)
+    plt.legend(loc='upper left')
+    plt.title(title_freq + ' Prognose ARIMA von Produkt ' + Produktgruppe + ' (Beginn: '
+              + start_fc_date + ')', fontname='Times New Roman', fontsize=36)
+    plt.xlabel('Zeit', fontname='Times New Roman', fontsize=24)
+    plt.ylabel('Nachfrage', fontname='Times New Roman', fontsize=24)
+    plt.savefig(csv_out_path + now + '_PrognosePlot_ARIMA_' + title_freq + '_' + Produktgruppe + '_Beginn '
+                + start_fc_date + '.png')
+    
 
     # =======================================================================================
     writer = pd.ExcelWriter(csv_out_path + now + '_Forecast_ARIMA_' + title_freq + '_' + Produktgruppe + '_'
@@ -290,10 +307,10 @@ def forecast_SARIMA():
         freq = 'B'
     step_CV = 6
     step = 5
-    forecast = 1
-    start_date = start_date_offset(start_fc_date, train_size + (8 * step_CV), freq)
+    forecast = 5 if freq=='B' else 1
+    start_date = start_date_offset(start_fc_date, train_size + (8 * step_CV * forecast), freq)
     m = 52
-    title_freq = 'Weekly'
+    title_freq = 'Weekly' if freq=='W' else 'Business Day'
 
     ''' === Preparing Data === '''
     data = dataframe_read(csv_file, Produktgruppe)
@@ -389,13 +406,29 @@ def forecast_SARIMA():
     train, test = train_test_split(data_result, train_size=train_size, shuffle=False)
     
     # Gleitender Mittelwert
-    data_result['MA'] = data_result.rolling(window=5).mean().round(decimals=0)
+    data_result['MA'] = data_result.rolling(window=forecast * step).mean().round(decimals=0)
     
     # == SARIMA ==
     data_result['SARIMA'] = sm.tsa.statespace.SARIMAX(train['KWMENG'], order=(p, d, q),
-    seasonal_order=(P, D, Q, m)).fit(disp=False).forecast(steps=step).round(decimals=0)
+    seasonal_order=(P, D, Q, m)).fit(disp=False).forecast(steps=forecast * step).round(decimals=0)
     data_result = data_result.dropna(subset=(['SARIMA']))
     print('result: \n', data_result)
+
+    # =============================================================================
+    
+    plot_data = train['KWMENG'].tail(10 * forecast)
+    
+    plt.figure(figsize=(20, 10))
+    plt.plot(plot_data, label='Training Data', linewidth=3)
+    plt.plot(data_result['MA'], label='Moving Average', linewidth=3)
+    plt.plot(data_result['SARIMA'], label='SARIMA', linewidth=3)
+    plt.legend(loc='upper left')
+    plt.title(title_freq + ' Prognose SARIMA von Produkt ' + Produktgruppe + ' (Beginn: '
+              + start_fc_date + ')', fontname='Times New Roman', fontsize=36)
+    plt.xlabel('Zeit', fontname='Times New Roman', fontsize=24)
+    plt.ylabel('Nachfrage', fontname='Times New Roman', fontsize=24)
+    plt.savefig(csv_out_path + now + '_PrognosePlot_SARIMA_' + title_freq + '_' + Produktgruppe + '_Beginn '
+                + start_fc_date + '.png')
 
 
     # =======================================================================================
