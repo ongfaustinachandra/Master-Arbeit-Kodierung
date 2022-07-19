@@ -59,7 +59,14 @@ def statistic_analysis(dataset, freq, txt_path):
         op.write('\n\n')
 
 def plot_decomposition(x, observed, trend, seasonal, residual, Produktgruppe, freq, fig_path):
-    title_freq = 'Business Day' if freq == 'B' else 'Weekly'
+    if freq == 'B':
+        title_freq = 'Business Day'
+    elif freq == 'D':
+        title_freq = 'Daily'
+    elif freq == 'M':
+        title_freq = 'Monthly'
+    else:
+        title_freq = 'Weekly'
     fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(15, 8))
     ax1.plot(x, observed)
     ax1.yaxis.set_label_position('right')
@@ -94,7 +101,7 @@ def demand_pattern_class(sq_KoV, ADI):
 if __name__ == '__main__':
     start_date = '02-01-2017'
     end_date = '31-10-2021' # 'End date on Sunday, last day of the month'
-    Produktgruppe = 'C4'  # 'A', 'B', 'C'
+    Produktgruppe = 'C3'  # 'A', 'B', 'C'
     now = datetime.datetime.now()
     now = now.strftime('%Y-%m-%d_%H-%M')
     csv_path = '../Veltins Daten/'
@@ -107,17 +114,46 @@ if __name__ == '__main__':
     data_daily = dataframe_resampling(data, 'D', start_date, end_date)
     print('Data Daily: \n', data_daily.head(15))
 
+    # data daily
+    data_daily = dataframe_resampling(data, 'D', start_date, end_date)
+    print('Data Daily: \n', data_daily.head(15))
+    print('Data Daily: \n', data_daily.tail(15))
+    # data daily business days
+    data_daily_BDay = dataframe_resampling(data, 'B', start_date, end_date)
+    print('Data Dialy business days: \n', data_daily_BDay.head(15))
+    print('Data Dialy business days: \n', data_daily_BDay.tail(15))
     # data weekly
     data_weekly = dataframe_resampling(data, 'W', start_date, end_date)
     print('Data Weekly: \n', data_weekly.head(15))
     print('Data Weekly: \n', data_weekly.tail(15))
+    # data monthly
+    data_monthly = dataframe_resampling(data, 'M', start_date, end_date)
+    print('Data Monthly: \n', data_monthly.head(15))
+    print('Data Monthly: \n', data_monthly.tail(15))
 
-    # == Weekly Statistical Analysis ==
+
+    # == Daily Businessday ==
+    statistic_analysis(data_daily_BDay['KWMENG'], 'B', txt_path)
+
+    # == Weekly ==
     statistic_analysis(data_weekly['KWMENG'], 'W', txt_path)
+
+    # Monthly
+    statistic_analysis(data_monthly['KWMENG'], 'M', txt_path)
+
 
     # == Time Series Decomposition ==
     from matplotlib import pyplot
     from statsmodels.tsa.seasonal import seasonal_decompose
+
+    # == Businessday TS Decomposition ==
+    result2 = seasonal_decompose(data_daily_BDay['KWMENG'], model='additive', period=240)
+    observed2 = result2.observed
+    trend2 = result2.trend
+    seasonal2 = result2.seasonal
+    residual2 = result2.resid
+
+    plot_decomposition(data_daily_BDay.VDATU, observed2, trend2, seasonal2, residual2, Produktgruppe, 'B', fig_path)
 
     # == Weekly based TS Decompostition ==
     result3 = seasonal_decompose(data_weekly['KWMENG'], model='additive', period=52)
@@ -127,3 +163,12 @@ if __name__ == '__main__':
     residual3 = result3.resid
 
     plot_decomposition(data_weekly.VDATU, observed3, trend3, seasonal3, residual3, Produktgruppe, 'W', fig_path)
+
+    # == Monthly based TS Decomosition ==
+    result4 = seasonal_decompose(data_monthly['KWMENG'], model='additive', period=12)
+    observed4 = result4.observed
+    trend4 = result4.trend
+    seasonal4 = result4.seasonal
+    residual4 = result4.resid
+
+    plot_decomposition(data_monthly.VDATU, observed4, trend4, seasonal4, residual4, Produktgruppe, 'M', fig_path)
