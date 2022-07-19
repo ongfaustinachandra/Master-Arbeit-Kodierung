@@ -252,7 +252,7 @@ def forecast_ARIMA():
     train, test = train_test_split(data_result, train_size=train_size, shuffle=False)
     
     # Gleitender Mittelwert
-    data_result['MA'] = data_result.rolling(window=forecast * step).mean().round(decimals=0)
+    data_result['MA'] = data_result.rolling(window=forecast * step, closed=('left')).mean().round(decimals=0)
     
     # == ARIMA ==    
     data_result['ARIMA'] = sm.tsa.statespace.SARIMAX(train['KWMENG'], order=(p, d, q)
@@ -406,7 +406,7 @@ def forecast_SARIMA():
     train, test = train_test_split(data_result, train_size=train_size, shuffle=False)
     
     # Gleitender Mittelwert
-    data_result['MA'] = data_result.rolling(window=forecast * step).mean().round(decimals=0)
+    data_result['MA'] = data_result.rolling(window=forecast * step, closed=('left')).mean().round(decimals=0)
     
     # == SARIMA ==
     data_result['SARIMA'] = sm.tsa.statespace.SARIMAX(train['KWMENG'], order=(p, d, q),
