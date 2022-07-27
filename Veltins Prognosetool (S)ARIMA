@@ -1,0 +1,554 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jun 27 14:32:02 2022
+
+@author: Faustina Chandra
+"""
+
+# https://datatofish.com/executable-pyinstaller/
+import tkinter as tk
+from tkinter import filedialog as fd
+from tkinter import END
+import math
+import numpy as np
+import pandas as pd
+from statsmodels.tsa.arima.model import ARIMA
+import matplotlib.pyplot as plt
+from pandas import read_csv
+from statsmodels.tsa.stattools import adfuller
+from sklearn.metrics import mean_squared_error
+from math import sqrt
+import statsmodels.api as sm
+from sklearn.model_selection import train_test_split
+import datetime
+import warnings
+
+
+# =============================================================================
+# # Hyperparameter Def
+# =============================================================================
+warnings.filterwarnings('ignore')
+
+
+def dataframe_read(file, produktgruppe):
+    dataset = read_csv(file,
+                       delimiter=";", parse_dates=[4], infer_datetime_format=True, dayfirst=True, header=0,
+                       low_memory=False, decimal=',',
+                       thousands='.')
+    dataset = dataset[dataset['MATNR'].str.contains(produktgruppe)]
+    dataset = dataset[['KWMENG', 'VDATU']]
+    dataset['VDATU'] = dataset['VDATU'].astype('datetime64[ns]')
+    return dataset
+
+
+def start_date_offset(start_fc_date, train_size, freq):
+    if freq == 'B':
+        start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.tseries.offsets.BusinessDay(train_size)
+    elif freq == 'W':
+        start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.DateOffset(weeks=train_size)
+    return start_date
+
+
+def end_date_offset(start_date, periods, freq):
+    if freq == 'B':
+        end_date = pd.to_datetime(start_date, dayfirst=True) + pd.tseries.offsets.BusinessDay(periods - 1)
+    elif freq == 'W':
+        end_date = pd.to_datetime(start_date, dayfirst=True) + pd.DateOffset(weeks=periods) - pd.DateOffset(days=1)
+    return end_date
+
+
+def dataframe_resampling(dataset, freq, start_date, end_date):
+
+    dataset_resampled = dataset.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    dataset_resampled = dataset_resampled.set_index(dataset_resampled.VDATU)
+    index = pd.date_range(start=pd.to_datetime(start_date, dayfirst=True), end=pd.to_datetime(end_date, dayfirst=True),
+                          freq=freq)
+    dataset_resampled = pd.DataFrame(dataset_resampled, index=index)
+    return dataset_resampled
+
+def rmse(result, column_name):
+
+    rmse = sqrt(mean_squared_error(result['KWMENG'], result[column_name]))
+    rmse = round(rmse, 0)
+    return rmse
+
+def rmses(result, column_name):
+    n_result = len(result)
+    rmses = rmse(result, column_name) * n_result * 100 / np.sum(result['KWMENG'])
+    rmses = round(rmses, 2)
+    return rmses
+
+
+# =============================================================================
+# # Tkinter Def
+# =============================================================================
+
+HEIGHT = 500
+WIDTH = 1000
+
+def select_file(file_entry):
+    filetypes = (('csv files', '*.csv'),)
+    filename = fd.askopenfilename(
+        title='Open a .csv file',
+        initialdir='/',
+        filetypes=filetypes)
+    file_entry.delete(0, END)
+    file_entry.insert(0, filename)
+    print('file Entry: ', file_entry.get())
+
+def select_folder(folder_entry):
+    foldername = fd.askdirectory(title='Ordner zur Ausgabe')
+    folder_entry.delete(0, END)
+    folder_entry.insert(0, foldername)
+    print('folder select: ', folder_entry.get())
+    
+def print_trainsize(trainsize):
+    print('train size: ', trainsize.get())
+    
+def print_product(product):
+    print('product class: ', product.get())
+    
+def print_start_fc_date(start_fc_date):
+    print('start forecast date: ', start_fc_date.get())
+    print('start forecast date ENTRY: ', entry_start_forecast_date.get())
+
+def print_intervall(*args):
+    intervall = varIntervall.get()
+    print('intervall: ', intervall)
+    
+def print_prognose(*args):
+    prognose = varPrognose.get()
+    print('prognose methode: ', prognose)
+    
+def adf_test(dataset):
+    result_w_adf = adfuller(dataset)
+    print('ADF Statistic:')
+    print('p-value: %f' % result_w_adf[1])
+    return result_w_adf
+    
+def start_forecast():
+    print('Start Forecasting!!')
+    ''' === Preparing Data === '''
+    
+    # ARIMA or SARIMA
+    prognose = varPrognose.get()
+    print('prognosemethode: ', prognose)
+    if prognose == 'ARIMA':
+        forecast_ARIMA()
+    else:
+        forecast_SARIMA()
+    
+    
+def forecast_ARIMA():
+    ''' === Preparing Data === '''
+    print('Start ARIMA')
+    
+    start_fc_date = entry_start_forecast_date.get()
+    Produktgruppe = entry_product.get()
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_file = entry_csv_in_file.get()
+    csv_out_path = entry_csv_out_path.get() + '/'
+    intervall = varIntervall.get()
+    print('intervall: ', intervall)
+    if intervall == 'Wochenintervall':
+        freq = 'W'
+        train_size = 39
+        forecast = 1
+    else:
+        freq = 'B'
+        train_size = 195
+        forecast = 5
+    step_CV = 6
+    step = 5
+    title_freq = 'Weekly' if freq=='W' else 'Business Day'
+
+    ''' === Preparing Data === '''
+    data = dataframe_read(csv_file, Produktgruppe)
+
+    # resampling data
+    start_date = data['VDATU'].min()
+    end_date = end_date_offset(start_fc_date, forecast * step, freq)
+    data = dataframe_resampling(data, freq, start_date, end_date)
+    train = dataframe_resampling(data, freq, start_date, start_fc_date)
+    print('start date:', start_date)
+
+    if freq == 'W' and len(train) > 91:
+        start_date = start_date_offset(start_fc_date, train_size + (8 * step_CV * forecast), freq)
+        data = dataframe_resampling(data, freq, start_date, end_date)
+    elif freq == 'B' and len(train) > 455:
+        start_date = start_date_offset(start_fc_date, train_size + (8 * step_CV * forecast), freq)
+        data = dataframe_resampling(data, freq, start_date, end_date)
+    
+    data_fc = data
+    data = data['KWMENG']
+
+    avg_errors = []
+    for p in range(6):
+        for q in range(6):
+            for i in range(3):
+                start_CV = start_date
+                for stCV in range(step_CV):
+                    # start_orig = start_date
+                    errors = []
+                    errorsp = []
+                    index_orig = pd.date_range(start=pd.to_datetime(start_CV, dayfirst=True),
+                                               periods=train_size + (forecast * step), freq=freq)
+                    data_orig = pd.DataFrame(data, index_orig)
+                    train_orig, test_orig = train_test_split(data_orig, train_size=train_size, shuffle=False)
+                    print('test_original: ', test_orig)
+                    start_rolling = start_CV
+                    print('start Rolling: ', start_rolling)
+                    print('start CV: ', start_CV)
+                    fcst = []
+                    for st in range(step):
+                        print('start Rolling: ', start_rolling)
+                        index = pd.date_range(start=pd.to_datetime(start_rolling, dayfirst=True),
+                                              periods=train_size + forecast, freq=freq)
+                        data_rolling = pd.DataFrame(data_orig, index)
+                        train, test = train_test_split(data_rolling, train_size=train_size, shuffle=False)
+                        print('test', test)
+                        
+                        try:
+                            mod = ARIMA(train, order=(p,i,q))
+                            res = mod.fit()
+                            result = res.forecast(steps=forecast)
+                            if freq == 'W':
+                                if math.isnan(result):
+                                    fcst.append(-9999999.)
+                                else:
+                                    fcst.extend(result)
+                            else:
+                                fcst.extend(result)
+                            print(fcst)
+                        except:
+                            print('errorred')
+                            if freq == 'B':
+                                fcst.extend([-9999999., -9999999., -9999999., -9999999., -9999999.])
+                            else:
+                                fcst.append(-9999999.)
+                        start_rolling = pd.to_datetime(start_rolling, dayfirst=True) + pd.DateOffset(weeks=1)
+
+                    errors.append(sqrt(mean_squared_error(test_orig, fcst)))
+                    errorsp.append(sqrt(mean_squared_error(test_orig, fcst)) * len(test_orig) * 100 / np.sum(test_orig))
+                    start_CV = pd.to_datetime(start_CV, dayfirst=True) + pd.DateOffset(weeks=8)
+                pq_result = [p, i, q, np.mean(errors), np.mean(errorsp)]
+                print(pq_result)
+                avg_errors.append(pq_result)
+    avg_errors = pd.DataFrame(avg_errors)
+    avg_errors.columns = ['p', 'i', 'q', 'RMSE', 'RMSE(%)']
+    avg_errors = avg_errors.sort_values('RMSE', ascending=False)
+    print(avg_errors)
+    
+    p = int(avg_errors.iloc[-1]['p'])
+    d = int(avg_errors.iloc[-1]['i'])
+    q = int(avg_errors.iloc[-1]['q'])
+    
+    best_rmse = int(avg_errors.iloc[-1]['RMSE'])
+    best_rmses = int(avg_errors.iloc[-1]['RMSE(%)'])
+    best_error = pd.DataFrame({'RMSE': [best_rmse], 'RMSE(%)': [best_rmses]})
+    
+    print('p: ', p)
+    print('d: ', d)
+    print('q: ', q)
+
+    
+    # =============================================================================
+    #     # start forecasting
+    # =============================================================================
+
+    start_fc_train_date = start_date_offset(start_fc_date, train_size, freq)
+    data_result = dataframe_resampling(data_fc, freq, start_fc_train_date, end_date)
+    train, test = train_test_split(data_result, train_size=train_size, shuffle=False)
+    
+    # Gleitender Mittelwert
+    pred_index =  pd.date_range(start=pd.to_datetime(start_fc_date, dayfirst=True),
+                                periods=forecast * step, freq=freq)
+    gleit_Mitt = train.rolling(window=5, closed=('left')).mean().round(decimals=0)
+    gleit_Mitt = gleit_Mitt['KWMENG'].tail(1)
+    print('Gleit mitt: ', gleit_Mitt)
+    array_GM = np.empty(forecast * step)
+    for i in range(forecast * step):
+        array_GM[i] = gleit_Mitt
+    gleit_Mitt = pd.DataFrame(array_GM, pred_index)
+    data_result['MA'] = gleit_Mitt
+    
+    # == ARIMA ==
+    data_result['ARIMA'] = ARIMA(train['KWMENG'], order=(p,d,q)).fit().forecast(steps=forecast*step).round(decimals=0)
+    data_result = data_result.dropna(subset=(['ARIMA']))
+    print('result: \n', data_result)
+    
+    # =============================================================================
+    plot_data = train['KWMENG'].tail(10 * forecast)
+    
+    plt.figure(figsize=(20, 10))
+    plt.plot(plot_data, label='Training Data', linewidth=3)
+    plt.plot(data_result['MA'], label='Moving Average', linewidth=3)
+    plt.plot(data_result['ARIMA'], label='ARIMA', linewidth=3)
+    plt.legend(loc='upper left')
+    plt.title(title_freq + ' Prognose ARIMA von Produkt ' + Produktgruppe + ' (Beginn: '
+              + start_fc_date + ')', fontname='Times New Roman', fontsize=36)
+    plt.xlabel('Zeit', fontname='Times New Roman', fontsize=24)
+    plt.ylabel('Nachfrage', fontname='Times New Roman', fontsize=24)
+    plt.savefig(csv_out_path + now + '_PrognosePlot_ARIMA_' + title_freq + '_' + Produktgruppe + '_Beginn '
+                + start_fc_date + '.png')
+    
+
+    # =======================================================================================
+    writer = pd.ExcelWriter(csv_out_path + now + '_Forecast_ARIMA_' + title_freq + '_' + Produktgruppe + '_'
+                + str(train_size) + '_' + start_fc_date + '.xlsx', engine=('xlsxwriter'))
+    
+    # write each dataframe to worksheets
+    data_result[['MA', 'ARIMA']].to_excel(writer, sheet_name='Forecast_result')
+    best_error.to_excel(writer, sheet_name='Fehler')
+    writer.save()
+
+    
+def forecast_SARIMA():
+    print('Start SARIMA')
+    ''' === Preparing Data === '''
+    
+    start_fc_date = entry_start_forecast_date.get()
+    Produktgruppe = entry_product.get()
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_file = entry_csv_in_file.get()
+    csv_out_path = entry_csv_out_path.get() + '/'
+    intervall = varIntervall.get()
+    print('intervall: ', intervall)
+    if intervall == 'Wochenintervall':
+        freq = 'W'
+        train_size = 156
+        forecast = 1
+    else:
+        freq = 'B'
+        train_size = 780
+        forecast = 5
+    step_CV = 6
+    step = 5
+    m = 52
+    title_freq = 'Weekly' if freq=='W' else 'Business Day'
+
+    ''' === Preparing Data === '''
+    data = dataframe_read(csv_file, Produktgruppe)
+
+    # resampling data
+    start_date = data['VDATU'].min()
+    end_date = end_date_offset(start_fc_date, forecast * step, freq)
+    data = dataframe_resampling(data, freq, start_date, end_date)
+    train = dataframe_resampling(data, freq, start_date, start_fc_date)
+    print('start date:', start_date)
+    
+    if freq == 'W' and len(train) > 208:
+        start_date = start_date_offset(start_fc_date, train_size + (8 * step_CV * forecast), freq)
+        data = dataframe_resampling(data, freq, start_date, end_date)
+    elif freq == 'B' and len(train) > 1040:
+        start_date = start_date_offset(start_fc_date, train_size + (8 * step_CV * forecast), freq)
+        data = dataframe_resampling(data, freq, start_date, end_date)
+    
+    data_fc = data
+    data = data['KWMENG']
+
+    scores = []
+    for p in range(3):
+        for i in range(2):
+            for q in range(3):
+                for P in range(3):
+                    for D in range(2):
+                        for Q in range(3):
+                            start_CV = start_date
+                            for stCV in range(step_CV):
+                                errors = []
+                                errorsp = []
+                                index_orig = pd.date_range(start=pd.to_datetime(start_CV, dayfirst=True),
+                                                           periods=train_size + (forecast * step),
+                                                           freq=freq)
+                                data_orig = pd.DataFrame(data, index_orig)
+                                train_orig, test_orig = train_test_split(data_orig, train_size=train_size, shuffle=False)
+                                start_rolling = start_CV
+                                print('start Rolling: ', start_rolling)
+                                print('start CV: ', start_CV)
+                                fcst = []
+                                for st in range(step):
+                                    print('start Rolling: ', start_rolling)
+                                    index = pd.date_range(start=pd.to_datetime(start_rolling, dayfirst=True),
+                                                          periods=train_size + forecast, freq=freq)
+                                    data_rolling = pd.DataFrame(data_orig, index)
+                                    train, test = train_test_split(data_rolling, train_size=train_size, shuffle=False)
+                                    print('test', test)
+
+                                    try:
+                                        mod = sm.tsa.statespace.SARIMAX(train, order=(p, i, q), seasonal_order=(P, D, Q, m))
+                                        res = mod.fit(disp=False)
+                                        result = res.forecast(steps=forecast)
+                                        if freq == 'W':
+                                            if math.isnan(result):
+                                                fcst.append(-9999999.)
+                                            else:
+                                                fcst.extend(result)
+                                        else:
+                                            fcst.extend(result)
+                                        print(fcst)
+                                    except:
+                                        print('errored')
+                                        if freq == 'B':
+                                            fcst.extend([-9999999., -9999999., -9999999., -9999999., -9999999.])
+                                        else:
+                                            fcst.append(-9999999.)
+                                    start_rolling = pd.to_datetime(start_rolling, dayfirst=True) + pd.DateOffset(weeks=1)
+
+                                errors.append(sqrt(mean_squared_error(test_orig, fcst)))
+                                errorsp.append(sqrt(mean_squared_error(test_orig, fcst)) * len(test_orig) * 100 / np.sum(
+                                        test_orig))
+                                start_CV = pd.to_datetime(start_CV, dayfirst=True) + pd.DateOffset(weeks=8)
+                            pqPDQ_result = [p, i, q, P, D, Q, np.mean(errors), np.mean(errorsp)]
+                            print(pqPDQ_result)
+                            scores.append(pqPDQ_result)
+    res = pd.DataFrame(scores)
+    res.columns = ['p', 'd', 'q', 'P', 'D', 'Q', 'RMSE', 'RMSE(%)']
+    res = res.sort_values('RMSE', ascending=False)
+    print(res)
+    
+    p = int(res.iloc[-1]['p'])
+    d = int(res.iloc[-1]['d'])
+    q = int(res.iloc[-1]['q'])
+    P = int(res.iloc[-1]['P'])
+    D = int(res.iloc[-1]['D'])
+    Q = int(res.iloc[-1]['Q'])
+    best_rmse = int(res.iloc[-1]['RMSE'])
+    best_rmses = int(res.iloc[-1]['RMSE(%)'])
+    best_error = pd.DataFrame({'RMSE': [best_rmse], 'RMSE(%)': [best_rmses]})
+    
+    print('p: ', p)
+    print('d: ', d)
+    print('q: ', q)
+    print('P: ', P)
+    print('D: ', D)
+    print('Q: ', Q)
+    
+    # =============================================================================
+    #     # start forecasting
+    # =============================================================================
+        
+    start_fc_train_date = start_date_offset(start_fc_date, train_size, freq)
+    data_result = dataframe_resampling(data_fc, freq, start_fc_train_date, end_date)
+    train, test = train_test_split(data_result, train_size=train_size, shuffle=False)
+    
+    # Gleitender Mittelwert
+    pred_index =  pd.date_range(start=pd.to_datetime(start_fc_date, dayfirst=True),
+                                periods=forecast * step, freq=freq)
+    gleit_Mitt = train.rolling(window=5, closed=('left')).mean().round(decimals=0)
+    gleit_Mitt = gleit_Mitt['KWMENG'].tail(1)
+    print('Gleit mitt: ', gleit_Mitt)
+    array_GM = np.empty(forecast * step)
+    for i in range(forecast * step):
+        array_GM[i] = gleit_Mitt
+    gleit_Mitt = pd.DataFrame(array_GM, pred_index)
+    data_result['MA'] = gleit_Mitt
+    
+    # == SARIMA ==
+    data_result['SARIMA'] = sm.tsa.statespace.SARIMAX(train['KWMENG'], order=(p, d, q),
+    seasonal_order=(P, D, Q, m)).fit(disp=False).forecast(steps=forecast * step).round(decimals=0)
+    data_result = data_result.dropna(subset=(['SARIMA']))
+    print('result: \n', data_result)
+
+    # =============================================================================
+    
+    plot_data = train['KWMENG'].tail(10 * forecast)
+    
+    plt.figure(figsize=(20, 10))
+    plt.plot(plot_data, label='Training Data', linewidth=3)
+    plt.plot(data_result['MA'], label='Moving Average', linewidth=3)
+    plt.plot(data_result['SARIMA'], label='SARIMA', linewidth=3)
+    plt.legend(loc='upper left')
+    plt.title(title_freq + ' Prognose SARIMA von Produkt ' + Produktgruppe + ' (Beginn: '
+              + start_fc_date + ')', fontname='Times New Roman', fontsize=36)
+    plt.xlabel('Zeit', fontname='Times New Roman', fontsize=24)
+    plt.ylabel('Nachfrage',  fontname='Times New Roman', fontsize=24)
+    plt.savefig(csv_out_path + now + '_PrognosePlot_SARIMA_' + title_freq + '_' + Produktgruppe + '_Beginn '
+                + start_fc_date + '.png')
+
+
+    # =======================================================================================
+    writer = pd.ExcelWriter(csv_out_path + now + '_Forecast_SARIMA_' + title_freq + '_' + Produktgruppe + '_'
+                + str(train_size) + '_' + start_fc_date + '.xlsx', engine=('xlsxwriter'))
+    
+    # write each dataframe to worksheets
+    data_result[['MA', 'SARIMA']].to_excel(writer, sheet_name='Forecast_result')
+    best_error.to_excel(writer, sheet_name='Fehler')
+    writer.save()
+    
+# =============================================================================
+# # MAIN
+# =============================================================================
+
+if __name__ == "__main__":
+    window = tk.Tk()
+    window.title('VELTINS Bedarfsprognose-Tool')
+    
+    canvas = tk.Canvas(window, height=HEIGHT, width=WIDTH)
+    canvas.pack()
+    
+    frame = tk.Frame(window, bg='#DADADA')
+    frame.place(relx=0.01, rely=0.01, relwidth=0.98, relheight=0.98)
+    
+    # Label
+    label_csv_in_file = tk.Label(window, text='CSV Eingabe Dateiname \t: ', font=('Times New Roman', 16))
+    label_csv_out_path = tk.Label(window, text='CSV Ausgabe Pfad \t\t: ', font=('Times New Roman', 16))
+    label_product = tk.Label(window, text='Produktklasse (MATNR)\t: ', font=('Times New Roman', 16))
+    label_methode = tk.Label(window, text='Prognosemethode \t\t: ', font=('Times New Roman', 16))
+    label_intervall = tk.Label(window, text='Zeitintervall \t\t: ', font=('Times New Roman', 16))
+    label_start_forecast_date = tk.Label(window, text='Start Forecast Date \t\t: ', font=('Times New Roman', 16))
+    label_date_format = tk.Label(window, text='(DD-MM-YYYY)', font=('Times New Roman', 14))
+
+    label_csv_in_file.place(x=20, y=50)
+    label_csv_out_path.place(x=20, y=100)
+    label_product.place(x=20, y=150)
+    label_methode.place(x=20, y=200)
+    label_intervall.place(x=20, y=250)
+    label_start_forecast_date.place(x=20, y=300)
+    label_date_format.place(x=530, y=303)
+    
+    # https://stackoverflow.com/questions/52183821/only-one-file-type-to-be-accepted
+    # https://www.pythontutorial.net/tkinter/tkinter-open-file-dialog/
+    
+    # Drop DownList
+    optionListPrognose = ['SARIMA', 'ARIMA']
+    varPrognose = tk.StringVar(window)
+    varPrognose.set(optionListPrognose[0])
+    optPrognose = tk.OptionMenu(window, varPrognose, *optionListPrognose)
+    varPrognose.trace('w', print_prognose)
+    optPrognose.config(font=('Times New Roman', 16))
+    optPrognose.place(x=320, y=203, width=200)
+    
+    optionListIntervall = ['Wochenintervall', 'Tagesintervall']
+    varIntervall = tk.StringVar(window)
+    varIntervall.set(optionListIntervall[0])
+    optIntervall = tk.OptionMenu(window, varIntervall, *optionListIntervall)
+    varIntervall.trace('w', print_intervall)
+    optIntervall.config(font=('Times New Roman', 16))
+    optIntervall.place(x=320, y=253, width=200)
+    
+    # Entry
+    entry_csv_in_file = tk.Entry(window, text="", bg='white', font=('Times New Roman', 16))
+    entry_csv_in_file.place(x=320, y=53, width=450)
+    entry_csv_out_path = tk.Entry(window, bg='white', font=('Times New Roman', 16))
+    entry_csv_out_path.place(x=320, y=103, width=450)
+    entry_product = tk.Entry(window, bg='white', font=('Times New Roman', 16))
+    entry_product.place(x=320, y=153, width=100)
+    # gap
+    entry_start_forecast_date = tk.Entry(window, bg='white', font=('Times New Roman', 16))
+    entry_start_forecast_date.place(x=320, y=303, width=200)
+    
+    
+    # Button
+    button_open_file = tk.Button(window, text='Datei Suche', command=lambda: select_file(entry_csv_in_file),font=('Times New Roman', 14))
+    button_open_file.place(x=800, y=53)
+    button_open_folder = tk.Button(window, text='Pfad Suche', command=lambda: select_folder(entry_csv_out_path), font=('Times New Roman', 14))
+    button_open_folder.place(x=800, y=103)
+    button_start_forecast = tk.Button(frame, text='Start Forecast', command=lambda: start_forecast(), font=('Times New Roman', 24))
+    button_start_forecast.pack(side='bottom', fill='both')
+    
+    window.mainloop()
