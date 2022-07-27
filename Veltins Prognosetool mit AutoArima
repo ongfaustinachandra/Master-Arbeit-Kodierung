@@ -1,0 +1,264 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jun  7 11:28:04 2022
+
+@author: smonchan
+"""
+import tkinter as tk
+from tkinter import filedialog as fd
+from tkinter import END
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from pandas import read_csv
+import datetime
+import warnings
+warnings.filterwarnings('ignore')
+from pmdarima.arima import auto_arima
+from pmdarima.arima import OCSBTest
+
+
+def dataframe_read(file, produktgruppe):
+    dataset = read_csv(file,
+                    delimiter=";", parse_dates=[4], infer_datetime_format=True, dayfirst=True, header=0,
+                    low_memory=False, decimal=',',
+                    thousands='.')
+    dataset = dataset[dataset['MATNR'].str.contains(produktgruppe)]
+    dataset = dataset[['KWMENG', 'VDATU']]
+    dataset['VDATU'] = dataset['VDATU'].astype('datetime64[ns]')
+    return dataset
+
+def start_date_offset(start_fc_date, train_size, freq):
+	if freq == 'B':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.tseries.offsets.BusinessDay(train_size)
+	elif freq == 'W':
+		start_date = pd.to_datetime(start_fc_date, dayfirst=True) - pd.DateOffset(weeks=train_size)
+	return start_date
+
+def end_date_offset(start_date, periods, freq):
+	if freq == 'B':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.tseries.offsets.BusinessDay(periods - 1)
+	elif freq == 'W':
+		end_date = pd.to_datetime(start_date, dayfirst=True) + pd.DateOffset(weeks=periods) - pd.DateOffset(days=1)
+	return end_date
+
+def dataframe_resampling(dataset, freq, start_date, end_date):
+    dataset_resampled = dataset.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    dataset_resampled = dataset_resampled.set_index(dataset_resampled.VDATU)
+    index = pd.date_range(start=pd.to_datetime(start_date, dayfirst=True), end=pd.to_datetime(end_date, dayfirst=True), freq=freq)
+    dataset_resampled = pd.DataFrame(dataset_resampled, index=index)
+    return dataset_resampled
+
+# =============================================================================
+# GUI
+# =============================================================================
+
+def select_file(file_entry):
+    filetypes = (('csv files', '*.csv'),)
+    filename = fd.askopenfilename(
+        title='Open a .csv file',
+        initialdir='/',
+        filetypes=filetypes)
+    file_entry.delete(0, END)
+    file_entry.insert(0, filename)
+    print('file Entry: ', file_entry.get())
+
+def select_folder(folder_entry):
+    foldername = fd.askdirectory(title='Ordner zur Ausgabe')
+    folder_entry.delete(0, END)
+    folder_entry.insert(0, foldername)
+    print('folder select: ', folder_entry.get())
+    
+def print_trainsize(trainsize):
+    print('train size: ', trainsize.get())
+    
+def print_product(product):
+    print('product class: ', product.get())
+    
+def print_start_fc_date(start_fc_date):
+    print('start forecast date: ', start_fc_date.get())
+    print('start forecast date ENTRY: ', entry_start_forecast_date.get())
+
+def print_intervall(*args):
+    intervall = varIntervall.get()
+    print('intervall: ', intervall)
+
+def start_forecast():
+    ''' === Preparing Data === '''
+    print('Start Forecasting')
+    
+    start_fc_date = entry_start_forecast_date.get()
+    Produktgruppe = entry_product.get()
+    now = datetime.datetime.now()
+    now = now.strftime('%Y-%m-%d_%H-%M')
+    csv_file = entry_csv_in_file.get()
+    csv_out_path = entry_csv_out_path.get() + '/'
+    intervall = varIntervall.get()
+    print('intervall: ', intervall)
+    if intervall == 'Wochenintervall':
+        freq = 'W'
+        m = 52
+        forecast = 5
+        train_size = 208
+    else:
+        freq = 'B'
+        m = 7
+        forecast = 25
+        train_size = 1040
+    title_freq = 'Business_Day' if freq == 'B' else 'Weekly'
+
+    ''' === Preparing Data === '''
+    data = dataframe_read(csv_file, Produktgruppe)
+
+    # resampling data
+    data = data.resample(freq, on='VDATU', label='right', closed='right').sum() \
+        .reset_index().sort_values(by='VDATU')
+    data = data.set_index(data.VDATU)
+    start_date = data['VDATU'].min()
+    end_date = end_date_offset(start_fc_date, forecast, freq)
+    data_df = dataframe_resampling(data, freq, start_date, end_date)
+    
+    train = dataframe_resampling(data, freq, start_date, start_fc_date)
+    print('start date:', start_date)
+    
+    if freq == 'W' and len(train) > 208:
+        start_date = start_date_offset(start_fc_date, train_size, freq)
+        train = dataframe_resampling(train, freq, start_date, start_fc_date)
+    elif freq == 'B' and len(train) > 1040:
+        start_date = start_date_offset(start_fc_date, train_size, freq)
+        train = dataframe_resampling(train, freq, start_date, start_fc_date)
+
+    train_df = train
+    data = data['KWMENG']
+    train = train['KWMENG']
+    
+    print('data_df: ', data_df)
+    print('train_df: ', train_df)
+    print('data: ', data)
+    print('train: ', train)
+    
+    
+    test_season = OCSBTest(m=52, lag_method='bic', max_lag=10).estimate_seasonal_differencing_term(train)
+    model = auto_arima(train, start_p=0, start_q=0,start_P=0, start_Q=0, D=test_season,
+                       max_p=6, max_d=3, max_q=6, max_P=6, max_D=3, max_Q=6,
+                       m=m, seasonal_test='ocsb', test='adf', 
+                       scoring=('mse'), suppress_warnings=(True),
+                       stepwise=(True), information_criterion='aic', trace=(True))
+    # max_p=6, max_q=6, max_d=3, start_P=0, start_Q=0, max_P=6, max_D=3, max_Q=6,
+    test_season = OCSBTest(m=52, lag_method='bic', max_lag=10).estimate_seasonal_differencing_term(train)
+    print('Summary: \n', model.summary())
+    print('seasonal test: ', test_season)
+    prediction_ARIMA = model.predict(n_periods=forecast)
+    prediction_ARIMA = prediction_ARIMA.astype(int)
+    print(prediction_ARIMA)
+    
+    pred_index =  pd.date_range(start=pd.to_datetime(start_fc_date, dayfirst=True),
+                                periods=forecast, freq=freq)
+    pred = pd.DataFrame(prediction_ARIMA, pred_index)
+    print('prediction result: ', pred)
+    
+    # Gleitender Mittelwert
+    gleit_Mitt = train.rolling(window=5, closed=('left')).mean().round(decimals=0)
+    gleit_Mitt = gleit_Mitt.tail(1)
+    array_GM = np.empty(forecast, dtype=int)
+    for i in range(forecast):
+        array_GM[i] = gleit_Mitt
+    
+    print('gliettender Mittelwert: ', array_GM)
+    gleit_Mitt = pd.DataFrame(array_GM, pred_index)
+    print('gleittender Mittelwert: ', gleit_Mitt)
+    
+    data_df['MA'] = gleit_Mitt
+    data_df['predict'] = pred
+    print('result: ', data_df.tail(20))
+        
+    
+    # =============================================================================
+    
+    plot_data = train.tail(5 * forecast)
+    
+    plt.figure(figsize=(20, 10))
+    plt.plot(plot_data, label='Training Data', linewidth=3)
+    plt.plot(gleit_Mitt, label='Moving Average', linewidth=3)
+    plt.plot(pred, label='prediction', linewidth=3)
+    plt.legend(loc='upper left')
+    plt.title(title_freq + ' Prognose von Produkt ' + Produktgruppe + ' (Beginn: '
+              + start_fc_date + ')', fontname='Times New Roman', fontsize=36)
+    plt.xlabel('Zeit', fontname='Times New Roman', fontsize=24)
+    plt.ylabel('Nachfrage', fontname='Times New Roman', fontsize=24)
+    plt.savefig(csv_out_path + now + '_PrognosePlot_AutoARIMA_' + title_freq + '_' + Produktgruppe + '_Beginn '
+                + start_fc_date + '.png')
+   
+    
+    data_df = data_df.dropna(subset=(['predict']))
+    data_df[['MA', 'predict']].to_excel(csv_out_path + now + '_AutoARIMA_Pred_' + title_freq + '_' + Produktgruppe + 
+                     '_Beginn ' + start_fc_date + '.xlsx')
+    
+
+# =============================================================================
+# # MAIN
+# =============================================================================
+HEIGHT = 500
+WIDTH = 1000
+
+if __name__ == "__main__":
+    window = tk.Tk()
+    window.title('VELTINS Bedarfsprognose-Tool')
+    
+    canvas = tk.Canvas(window, height=HEIGHT, width=WIDTH)
+    canvas.pack()
+    
+    frame = tk.Frame(window, bg='#DADADA')
+    frame.place(relx=0.01, rely=0.01, relwidth=0.98, relheight=0.98)
+    
+    # Label
+    label_csv_in_file = tk.Label(window, text='CSV Eingabe Dateiname \t: ', font=('Times New Roman', 16))
+    label_csv_out_path = tk.Label(window, text='CSV Ausgabe Pfad \t\t: ', font=('Times New Roman', 16))
+    label_product = tk.Label(window, text='Produktklasse (MATNR)\t: ', font=('Times New Roman', 16))
+    label_intervall = tk.Label(window, text='Zeitintervall \t\t: ', font=('Times New Roman', 16))
+    label_start_forecast_date = tk.Label(window, text='Start Forecast Date \t\t: ', font=('Times New Roman', 16))
+    label_date_format = tk.Label(window, text='(DD-MM-YYYY)', font=('Times New Roman', 14))
+
+    label_csv_in_file.place(x=20, y=50)
+    label_csv_out_path.place(x=20, y=100)
+    label_product.place(x=20, y=150)
+    label_intervall.place(x=20, y=200)
+    label_start_forecast_date.place(x=20, y=250)
+    label_date_format.place(x=530, y=253)
+    
+    # https://stackoverflow.com/questions/52183821/only-one-file-type-to-be-accepted
+    # https://www.pythontutorial.net/tkinter/tkinter-open-file-dialog/
+    
+    # Drop DownList    
+    optionListIntervall = ['Wochenintervall', 'Tagesintervall']
+    varIntervall = tk.StringVar(window)
+    varIntervall.set(optionListIntervall[0])
+    optIntervall = tk.OptionMenu(window, varIntervall, *optionListIntervall)
+    varIntervall.trace('w', print_intervall)
+    optIntervall.config(font=('Times New Roman', 16))
+    optIntervall.place(x=320, y=203, width=200)
+    
+    # Entry
+    entry_csv_in_file = tk.Entry(window, text="", bg='white', font=('Times New Roman', 16))
+    entry_csv_in_file.place(x=320, y=53, width=450)
+    entry_csv_out_path = tk.Entry(window, bg='white', font=('Times New Roman', 16))
+    entry_csv_out_path.place(x=320, y=103, width=450)
+    entry_product = tk.Entry(window, bg='white', font=('Times New Roman', 16))
+    entry_product.place(x=320, y=153, width=100)
+    # gap
+    entry_start_forecast_date = tk.Entry(window, bg='white', font=('Times New Roman', 16))
+    entry_start_forecast_date.place(x=320, y=253, width=200)
+    
+    
+    
+    # Button
+    button_open_file = tk.Button(window, text='Datei Suche', command=lambda: select_file(entry_csv_in_file),font=('Times New Roman', 14))
+    button_open_file.place(x=800, y=53)
+    button_open_folder = tk.Button(window, text='Pfad Suche', command=lambda: select_folder(entry_csv_out_path), font=('Times New Roman', 14))
+    button_open_folder.place(x=800, y=103)
+    button_start_forecast = tk.Button(frame, text='Start Forecast', command=lambda: start_forecast(), font=('Times New Roman', 24))
+    button_start_forecast.pack(side='bottom', fill='both')
+    
+    window.mainloop()
